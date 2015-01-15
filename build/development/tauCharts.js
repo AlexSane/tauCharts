@@ -1,4 +1,4 @@
-/*! taucharts - v0.3.0 - 2015-01-13
+/*! taucharts - v0.3.3 - 2015-01-15
 * https://github.com/TargetProcess/tauCharts
 * Copyright (c) 2015 Taucraft Limited; Licensed Apache License 2.0 */
 (function (root, factory) {
@@ -1854,62 +1854,6 @@ define('utils/utils-draw',["exports", "../utils/utils", "../formatter-registry",
 
     return grid;
   };
-  var defaultRangeColor = _.times(10, function (i) {
-    return "color10-" + (1 + i);
-  });
-  var generateColor = function (node) {
-    var getClass;
-    var colorGuide = node.guide.color || {};
-    var colorDim = node.color.scaleDim;
-    var defaultColorClass = _.constant("color-default");
-
-    var buildArrayGetClass = function (brewer) {
-      var domain = node.domain(colorDim);
-      if (domain.length === 0 || (domain.length === 1 && domain[0] === null)) {
-        return defaultColorClass;
-      } else {
-        var fullDomain = domain.map(function (x) {
-          return String(x).toString();
-        });
-        return d3.scale.ordinal().range(brewer).domain(fullDomain);
-      }
-    };
-
-    var buildObjectGetClass = function (brewer, defaultGetClass) {
-      var domain = _.keys(brewer);
-      var range = _.values(brewer);
-      var calculateClass = d3.scale.ordinal().range(range).domain(domain);
-      return function (d) {
-        return brewer.hasOwnProperty(d) ? calculateClass(d) : defaultGetClass(d);
-      };
-    };
-
-    var wrapString = function (f) {
-      return function (d) {
-        return f(String(d).toString());
-      };
-    };
-
-    var brewer = colorGuide.brewer;
-    if (!brewer) {
-      getClass = wrapString(buildArrayGetClass(defaultRangeColor));
-    } else if (_.isArray(brewer)) {
-      getClass = wrapString(buildArrayGetClass(brewer));
-    } else if (_.isFunction(brewer)) {
-      getClass = function (d) {
-        return brewer(d, wrapString(buildArrayGetClass(defaultRangeColor)));
-      };
-    } else if (_.isObject(brewer)) {
-      getClass = buildObjectGetClass(brewer, defaultColorClass);
-    } else {
-      throw new Error("This brewer is not supported");
-    }
-
-    return {
-      get: getClass,
-      dimension: colorDim
-    };
-  };
 
   var extendLabel = function (guide, dimension, extend) {
     guide[dimension] = _.defaults(guide[dimension] || {}, {
@@ -1972,7 +1916,6 @@ define('utils/utils-draw',["exports", "../utils/utils", "../formatter-registry",
     getOrientation: getOrientation,
     fnDrawDimAxis: fnDrawDimAxis,
     fnDrawGrid: fnDrawGrid,
-    generateColor: generateColor,
     applyNodeDefaults: applyNodeDefaults,
     cutText: cutText,
     wrapText: wrapText
@@ -2275,6 +2218,10 @@ define('spec-engine-factory',["exports", "./utils/utils", "./utils/utils-draw", 
       fnTraverseSpec(utils.clone(spec.unit), spec.unit, function (selectorPredicates, unit) {
         unit.guide.x.tickFontHeight = settings.getAxisTickLabelSize("X").height;
         unit.guide.y.tickFontHeight = settings.getAxisTickLabelSize("Y").height;
+
+        unit.guide.x.tickFormatWordWrapLimit = settings.xAxisTickLabelLimit;
+        unit.guide.y.tickFormatWordWrapLimit = settings.yAxisTickLabelLimit;
+
         return unit;
       });
       return spec;
@@ -2861,11 +2808,54 @@ define('unit-domain-period-generator',["exports"], function (exports) {
 
   exports.UnitDomainPeriodGenerator = UnitDomainPeriodGenerator;
 });
-define('unit-domain-mixin',["exports", "./unit-domain-period-generator", "./utils/utils", "underscore", "d3"], function (exports, _unitDomainPeriodGenerator, _utilsUtils, _underscore, _d3) {
+define('size',["exports"], function (exports) {
+  
+
+  var f = function (x) {
+    return Math.sqrt(x);
+  };
+
+  var sizeScale = function (srcValues, minSize, maxSize, normalSize) {
+    var values = _.filter(srcValues, _.isFinite);
+
+    if (values.length === 0) {
+      return function (x) {
+        return normalSize;
+      };
+    }
+
+    var k = 1;
+    var xMin = 0;
+
+    var min = Math.min.apply(null, values);
+    var max = Math.max.apply(null, values);
+
+    var len = f(Math.max.apply(null, [Math.abs(min), Math.abs(max), max - min]));
+
+    xMin = (min < 0) ? min : 0;
+    k = (len === 0) ? 1 : ((maxSize - minSize) / len);
+
+    return function (x) {
+      var numX = (x !== null) ? parseFloat(x) : 0;
+
+      if (!_.isFinite(numX)) {
+        return maxSize;
+      }
+
+      var posX = (numX - xMin); // translate to positive x domain
+
+      return (minSize + (f(posX) * k));
+    };
+  };
+
+  exports.sizeScale = sizeScale;
+});
+define('unit-domain-mixin',["exports", "./unit-domain-period-generator", "./utils/utils", "./size", "underscore", "d3"], function (exports, _unitDomainPeriodGenerator, _utilsUtils, _size, _underscore, _d3) {
   
 
   var UnitDomainPeriodGenerator = _unitDomainPeriodGenerator.UnitDomainPeriodGenerator;
   var utils = _utilsUtils.utils;
+  var sizeScale = _size.sizeScale;
   var _ = _underscore;
   var d3 = _d3;
   /* jshint ignore:end */
@@ -3087,6 +3077,94 @@ define('unit-domain-mixin',["exports", "./unit-domain-period-generator", "./util
         });
         return wrap;
       };
+
+      this.fnScaleColor = function (scaleDim, brewer, options) {
+        var opts = options || {};
+
+        var info = _scaleMeta(scaleDim, opts);
+
+        var defaultColorClass = _.constant("color-default");
+
+        var defaultRangeColor = _.times(20, function (i) {
+          return "color20-" + (1 + i);
+        });
+
+        var buildArrayGetClass = function (domain, brewer) {
+          if (domain.length === 0 || (domain.length === 1 && domain[0] === null)) {
+            return defaultColorClass;
+          } else {
+            var fullDomain = domain.map(function (x) {
+              return String(x).toString();
+            });
+            return d3.scale.ordinal().range(brewer).domain(fullDomain);
+          }
+        };
+
+        var buildObjectGetClass = function (brewer, defaultGetClass) {
+          var domain = _.keys(brewer);
+          var range = _.values(brewer);
+          var calculateClass = d3.scale.ordinal().range(range).domain(domain);
+          return function (d) {
+            return brewer.hasOwnProperty(d) ? calculateClass(d) : defaultGetClass(d);
+          };
+        };
+
+        var wrapString = function (f) {
+          return function (d) {
+            return f(String(d).toString());
+          };
+        };
+
+        var func;
+        if (!brewer) {
+          func = wrapString(buildArrayGetClass(info.values, defaultRangeColor));
+        } else if (_.isArray(brewer)) {
+          func = wrapString(buildArrayGetClass(info.values, brewer));
+        } else if (_.isFunction(brewer)) {
+          func = function (d) {
+            return brewer(d, wrapString(buildArrayGetClass(info.values, defaultRangeColor)));
+          };
+        } else if (_.isObject(brewer)) {
+          func = buildObjectGetClass(brewer, defaultColorClass);
+        } else {
+          throw new Error("This brewer is not supported");
+        }
+
+        var wrap = function (domainPropObject) {
+          return func(info.extract(domainPropObject));
+        };
+
+        wrap.get = wrap;
+        wrap.dimension = scaleDim;
+
+        wrap.legend = function (domainPropObject) {
+          var value = info.extract(domainPropObject);
+          var label = (opts.tickLabel) ? ((domainPropObject || {})[opts.tickLabel]) : (value);
+          var color = func(value);
+
+          return { value: value, color: color, label: label };
+        };
+
+        return wrap;
+      };
+
+      this.fnScaleSize = function (scaleDim, range, options) {
+        var opts = options || {};
+
+        var minSize = range[0];
+        var maxSize = range[1];
+        var normalSize = range[range.length - 1];
+
+        var info = _scaleMeta(scaleDim, opts);
+
+        var func = sizeScale(info.source, minSize, maxSize, normalSize);
+
+        var wrap = function (domainPropObject) {
+          return func(info.extract(domainPropObject));
+        };
+
+        return wrap;
+      };
     };
 
     UnitDomainMixin.prototype.mix = function (unit) {
@@ -3094,7 +3172,12 @@ define('unit-domain-mixin',["exports", "./unit-domain-period-generator", "./util
       unit.source = this.fnSource;
       unit.domain = this.fnDomain;
       unit.scaleMeta = this.fnScaleMeta;
+
       unit.scaleTo = this.fnScaleTo;
+      unit.scaleDist = this.fnScaleTo;
+      unit.scaleColor = this.fnScaleColor;
+      unit.scaleSize = this.fnScaleSize;
+
       unit.partition = (function () {
         return unit.data || unit.source(unit.$where);
       });
@@ -3104,7 +3187,7 @@ define('unit-domain-mixin',["exports", "./unit-domain-period-generator", "./util
           return varMeta.extract(item[splitByProperty]);
         }).map(function (values) {
           return ({
-            key: varMeta.extract(values[0][splitByProperty]),
+            key: values[0][splitByProperty],
             values: values
           });
         }).value();
@@ -3697,7 +3780,8 @@ define('charts/tau.chart',["exports", "./tau.plot", "../utils/utils", "../data-p
       y: config.y,
       color: config.color,
       guide: {
-        color: config.colorGuide
+        color: config.colorGuide,
+        size: config.sizeGuide
       },
       flip: config.flip,
       size: config.size
@@ -3787,7 +3871,8 @@ define('charts/tau.chart',["exports", "./tau.plot", "../utils/utils", "../data-p
           color: config.color,
           size: config.size,
           flip: config.flip,
-          colorGuide: currentGuide.color
+          colorGuide: currentGuide.color,
+          sizeGuide: currentGuide.size
         }));
         spec.guide = _.defaults(currentGuide, {
           x: { label: currentX },
@@ -4010,8 +4095,8 @@ define('elements/coords',["exports", "../utils/utils-draw", "../const", "../util
       });
       var unitFunc = TFuncMap(isFacet ? "CROSS" : "");
 
-      var domainX = root.scaleMeta(root.x, root.guide.x).values;
-      var domainY = root.scaleMeta(root.y, root.guide.y).values;
+      var domainX = root.scaleMeta(root.x, _.omit(root.guide.x, "tickLabel")).values;
+      var domainY = root.scaleMeta(root.y, _.omit(root.guide.y, "tickLabel")).values;
       var matrixOfPrFilters = new TMatrix(unitFunc(root, root.x, domainX, root.y, domainY));
       var matrixOfUnitNodes = new TMatrix(matrixOfPrFilters.sizeR(), matrixOfPrFilters.sizeC());
 
@@ -4114,15 +4199,15 @@ define('elements/line',["exports", "../const", "../utils/css-class-map"], functi
 
     var xScale = options.xScale;
     var yScale = options.yScale;
-    var color = options.color;
+    var colorScale = options.color;
 
-    var categories = node.groupBy(node.partition(), color.dimension);
+    var categories = node.groupBy(node.partition(), node.color.scaleDim);
 
     var widthClass = getLineClassesByWidth(options.width);
     var countClass = getLineClassesByCount(categories.length);
     var updateLines = function () {
       this.attr("class", function (d) {
-        return "" + CSS_PREFIX + "line i-role-element i-role-datum line " + color.get(d.key) + " " + widthClass + " " + countClass;
+        return "" + CSS_PREFIX + "line i-role-element i-role-datum line " + colorScale(d.key) + " " + widthClass + " " + countClass;
       });
       var paths = this.selectAll("path").data(function (d) {
         return [d.values];
@@ -4134,7 +4219,7 @@ define('elements/line',["exports", "../const", "../utils/css-class-map"], functi
     var drawPoints = function (points) {
       var update = function () {
         return this.attr("r", 1.5).attr("class", function (d) {
-          return "" + CSS_PREFIX + "dot-line dot-line i-role-element " + CSS_PREFIX + "dot i-role-datum " + color.get(d[color.dimension]);
+          return "" + CSS_PREFIX + "dot-line dot-line i-role-element " + CSS_PREFIX + "dot i-role-datum " + colorScale(d[node.color.scaleDim]);
         }).attr("cx", function (d) {
           return xScale(d[node.x.scaleDim]);
         }).attr("cy", function (d) {
@@ -4200,7 +4285,7 @@ define('elements/point',["exports", "../const"], function (exports, _const) {
       }).attr("cy", function (d) {
         return yScale(d[node.y.scaleDim]);
       }).attr("class", function (d) {
-        return "" + CSS_PREFIX + "dot dot i-role-element i-role-datum " + colorScale.get(d[colorScale.dimension]);
+        return "" + CSS_PREFIX + "dot dot i-role-element i-role-datum " + colorScale(d[node.color.scaleDim]);
       });
     };
 
@@ -4341,15 +4426,15 @@ define('elements/interval',["exports", "../utils/utils-draw", "../const"], funct
   var interval = function (node) {
     var options = node.options;
 
-    var xScale = options.xScale, yScale = options.yScale, color = options.color;
+    var xScale = options.xScale, yScale = options.yScale, colorScale = options.color;
 
-    var categories = node.groupBy(node.partition(), color.dimension);
+    var categories = node.groupBy(node.partition(), node.color.scaleDim);
     var method = flipHub[node.flip ? "FLIP" : "NORM"];
     var _ref3 = method(node, xScale, yScale, options.width, options.height, {
       tickWidth: 5,
       intervalWidth: 5,
       offsetCategory: 0
-    }, color.dimension);
+    }, node.color.scaleDim);
 
     var calculateX = _ref3.calculateX;
     var calculateY = _ref3.calculateY;
@@ -4360,7 +4445,7 @@ define('elements/interval',["exports", "../utils/utils-draw", "../const"], funct
 
     var updateBar = function () {
       return this.attr("height", calculateHeight).attr("width", calculateWidth).attr("class", function (d) {
-        return ("i-role-element i-role-datum bar " + CSS_PREFIX + "bar " + color.get(d[color.dimension]));
+        return ("i-role-element i-role-datum bar " + CSS_PREFIX + "bar " + colorScale(d[node.color.scaleDim]));
       }).attr("x", calculateX).attr("y", calculateY);
     };
 
@@ -4479,14 +4564,15 @@ define('elements/coords-parallel-line',["exports", "../utils/utils-draw", "../co
     draw: function (node) {
       node.color = node.dimension(node.color, node);
 
+      var guideColor = node.guide.color || {};
+      var color = node.scaleColor(node.color.scaleDim, guideColor.brewer, guideColor);
+
       var options = node.options;
 
       var scalesMap = node.x.reduce(function (memo, xN) {
         memo[xN] = node.scaleTo(xN, [options.height, 0], {});
         return memo;
       }, {});
-
-      var color = utilsDraw.generateColor(node);
 
       var categories = d3.nest().key(function (d) {
         return d[color.dimension];
@@ -4501,7 +4587,7 @@ define('elements/coords-parallel-line',["exports", "../utils/utils-draw", "../co
 
       var updateLines = function () {
         this.attr("class", function (d) {
-          return "graphical-report__" + "line" + " line " + "color10-9";
+          return "graphical-report__" + "line" + " line " + "color20-9";
         });
         var paths = this.selectAll("path").data(function (d) {
           return [d];
@@ -4536,49 +4622,7 @@ define('elements/coords-parallel-line',["exports", "../utils/utils-draw", "../co
 
   exports.CoordsParallelLine = CoordsParallelLine;
 });
-define('elements/size',["exports"], function (exports) {
-  
-
-  var f = function (x) {
-    return Math.sqrt(x);
-  };
-
-  var sizeScale = function (srcValues, minSize, maxSize, normalSize) {
-    var values = _.filter(srcValues, _.isFinite);
-
-    if (values.length === 0) {
-      return function (x) {
-        return normalSize;
-      };
-    }
-
-    var k = 1;
-    var xMin = 0;
-
-    var min = Math.min.apply(null, values);
-    var max = Math.max.apply(null, values);
-
-    var len = f(Math.max.apply(null, [Math.abs(min), Math.abs(max), max - min]));
-
-    xMin = (min < 0) ? min : 0;
-    k = (len === 0) ? 1 : ((maxSize - minSize) / len);
-
-    return function (x) {
-      var numX = (x !== null) ? parseFloat(x) : 0;
-
-      if (!_.isFinite(numX)) {
-        return maxSize;
-      }
-
-      var posX = (numX - xMin); // translate to positive x domain
-
-      return (minSize + (f(posX) * k));
-    };
-  };
-
-  exports.sizeScale = sizeScale;
-});
-define('node-map',["exports", "./elements/coords", "./elements/line", "./elements/point", "./elements/interval", "./utils/utils-draw", "./elements/coords-parallel", "./elements/coords-parallel-line", "./elements/size"], function (exports, _elementsCoords, _elementsLine, _elementsPoint, _elementsInterval, _utilsUtilsDraw, _elementsCoordsParallel, _elementsCoordsParallelLine, _elementsSize) {
+define('node-map',["exports", "./elements/coords", "./elements/line", "./elements/point", "./elements/interval", "./utils/utils-draw", "./elements/coords-parallel", "./elements/coords-parallel-line"], function (exports, _elementsCoords, _elementsLine, _elementsPoint, _elementsInterval, _utilsUtilsDraw, _elementsCoordsParallel, _elementsCoordsParallelLine) {
   
 
   var coords = _elementsCoords.coords;
@@ -4588,7 +4632,6 @@ define('node-map',["exports", "./elements/coords", "./elements/line", "./element
   var utilsDraw = _utilsUtilsDraw.utilsDraw;
   var CoordsParallel = _elementsCoordsParallel.CoordsParallel;
   var CoordsParallelLine = _elementsCoordsParallelLine.CoordsParallelLine;
-  var sizeScale = _elementsSize.sizeScale;
 
 
   var setupElementNode = function (node, dimensions) {
@@ -4607,7 +4650,8 @@ define('node-map',["exports", "./elements/coords", "./elements/line", "./element
     node.options.xScale = node.x.scaleDim && node.scaleTo(node.x.scaleDim, [0, W], node.x.guide);
     node.options.yScale = node.y.scaleDim && node.scaleTo(node.y.scaleDim, [H, 0], node.y.guide);
 
-    node.options.color = utilsDraw.generateColor(node);
+    var guideColor = node.guide.color || {};
+    node.options.color = node.scaleColor(node.color.scaleDim, guideColor.brewer, guideColor);
 
     if (node.size) {
       var minFontSize = _.min([node.guide.x.tickFontHeight, node.guide.y.tickFontHeight].filter(function (x) {
@@ -4616,7 +4660,8 @@ define('node-map',["exports", "./elements/coords", "./elements/line", "./element
       var minTickStep = _.min([node.guide.x.density, node.guide.y.density].filter(function (x) {
         return x !== 0;
       })) * 0.5;
-      node.options.sizeScale = sizeScale(node.domain(node.size.scaleDim), 2, minTickStep, minFontSize);
+      var guideSize = node.guide.size || {};
+      node.options.sizeScale = node.scaleSize(node.size.scaleDim, [2, minTickStep, minFontSize], guideSize);
     }
 
     return node;

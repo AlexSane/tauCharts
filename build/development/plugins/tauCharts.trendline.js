@@ -5,7 +5,7 @@
         });
     } else if (typeof module === "object" && module.exports) {
         var tauPlugins = require('tauCharts');
-        module.exports = factory();
+        module.exports = factory(tauPlugins);
     } else {
         factory(this.tauCharts);
     }
@@ -228,7 +228,7 @@
     var _ = tauCharts.api._;
     var d3 = tauCharts.api.d3;
 
-    var drawTrendLine = function (trendLineId, dots, xScale, yScale, trendColor, container) {
+    var drawTrendLine = function (trendLineId, dots, xScale, yScale, trendColor, container, originData) {
 
         var trendCssClass = [
             'graphical-report__trendline',
@@ -258,24 +258,30 @@
             this.attr('class', trendCssClass);
 
             var paths = this.selectAll('path').data(function (d) {
-                return [d];
+                return [d.dots];
             });
             paths.call(updatePaths);
             paths.enter().append('path').call(updatePaths);
             paths.exit().remove();
         };
 
-        var lines = container.selectAll('.' + trendLineId).data([dots]);
+        var lines = container.selectAll('.' + trendLineId).data([{dots: dots, values: originData}]);
         lines.call(updateLines);
         lines.enter().append('g').call(updateLines);
         lines.exit().remove();
     };
-
+    var isElement = function (unitMeta) {
+        return (unitMeta.type && unitMeta.type.indexOf('ELEMENT.') === 0);
+    };
+    var coordHasElements = function (units) {
+        return _.any(units, function (unit) {
+            return isElement(unit);
+        });
+    };
     var isApplicable = function (dimensions) {
         return function (unitMeta) {
-            var isElement = (unitMeta.type && unitMeta.type.indexOf('ELEMENT.') === 0);
-
-            if (!isElement) {
+            var hasElement = (unitMeta.type && unitMeta.type.indexOf('COORDS.') === 0 && coordHasElements(unitMeta.unit));
+            if (!hasElement) {
                 return false;
             }
             var x = dimensions[unitMeta.x].type;
@@ -284,7 +290,6 @@
                 return dimType && (dimType !== 'category');
             });
         };
-
     };
 
     var dfs = function (node, predicate) {
@@ -301,9 +306,6 @@
         }
     };
 
-    var isElement = function (unitMeta) {
-        return (unitMeta.type && unitMeta.type.indexOf('ELEMENT.') === 0);
-    };
 
     function trendline(xSettings) {
 
@@ -321,13 +323,13 @@
 
                 this._chart = chart;
                 var conf = chart.getConfig();
-                this._isApplicable = dfs(conf.spec.unit,isApplicable(conf.dimensions));
+                this._isApplicable = dfs(conf.spec.unit, isApplicable(conf.spec.dimensions));
 
                 if (settings.showPanel) {
 
                     this._container = chart.insertToRightSidebar(this.containerTemplate);
                     var classToAdd = this._isApplicable ? 'applicable-true' : 'applicable-false';
-                    if(!this._isApplicable) {
+                    if (!this._isApplicable) {
                         this._error = "Trend line can't be computed for categorical data. Each axis should be either a measure or a date.";
                     }
                     this._container.classList.add(classToAdd);
@@ -400,8 +402,9 @@
                             dots,
                             options.xScale,
                             options.yScale,
-                            options.color.get(sKey),
-                            options.container);
+                            options.color(sKey),
+                            options.container,
+                            sVal);
                     }
                 });
 
